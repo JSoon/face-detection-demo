@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Document</title>
+
+  <style>
+    .face-api {
+      position: relative;
+    }
+
+    #inputVideo {
+      width: 100%;
+      height: 100%;
+      background-color: black;
+    }
+
+    #screenshot,
+    #overlay {
+      z-index: 1;
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- 主要参考 -->
+  <!-- https://w3c.github.io/html-media-capture -->
+  <!-- https://developers.google.com/web/fundamentals/media/capturing-images -->
+  <!-- https://www.html5rocks.com/en/tutorials/getusermedia/intro/ -->
+  <!-- https://github.com/webisora/vscode-liveserver-https -->
+  <!-- https://github.com/justadudewhohacks/face-api.js -->
+  <!-- https://juejin.im/post/6844904073615900679 -->
+  <!-- https://github.com/eduardolundgren/tracking.js/ -->
+  <!-- 其他参考 -->
+  <!-- https://blog.csdn.net/weixin_30242907/article/details/99449635 -->
+  <!-- https://cloud.tencent.com/developer/article/1667583 -->
+
+  <h1>后置摄像头</h1>
+  <input type="file" accept="image/*" capture="environment" />
+
+  <h1>前置摄像头</h1>
+  <input type="file" accept="image/*" capture="user" />
+
+  <h1>人脸探测</h1>
+  <div id="J_IsGetUserMediaSupported"></div>
+  <button id="J_GetMedia">开始探测</button>
+  <div class="face-api">
+    <video onplay="onPlay(this)" id="inputVideo" autoplay muted playsinline controls></video>
+    <canvas id="screenshot"></canvas>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <h1>人脸探测截图</h1>
+  <img id="screenshotImage" src="" alt="">
+
+  <script>
+    const detectGetUserMediaResult = document.querySelector('#J_IsGetUserMediaSupported')
+    const isGetUserMediaSupported = detectGetUserMedia()
+    detectGetUserMediaResult.innerHTML = isGetUserMediaSupported ? '支持getUserMedia接口' : '不支持getUserMedia接口'
+
+    function detectGetUserMedia() {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        return true
+      } else {
+        return false
+      }
+    }
+  </script>
+
+  <script src="./node_modules/face-api.js/dist/face-api.js"></script>
+  <script src="./node_modules/webrtc-adapter/out/adapter.js"></script>
+
+  <script type="text/javascript">
+    // 视频源
+    const input = document.querySelector('#inputVideo')
+    // 视频截图
+    const screenshot = document.querySelector('#screenshot')
+    // 人脸探测描述
+    const canvas = document.querySelector('#overlay')
+
+    let predictedAges = []
+    let trackingTimer = null
+
+    document.querySelector('#J_GetMedia').onclick = (e) => {
+      run()
+    }
+
+    console.log('faceapi.nets', faceapi.nets)
+
+    async function run() {
+      // 如果已经开始, 则仅切换视频播放状态, 不再进行faceapi初始化
+      if (trackingTimer !== null) {
+        if (input.paused) {
+          input.play()
+        }
+        return
+      }
+
+      // 加载人脸探测依赖模块
+      await faceapi.nets.ssdMobilenetv1.loadFromUri('/models') // 人脸探测网络
+      await faceapi.nets.ageGenderNet.loadFromUri('/models') // 年龄&性别网络
+      await faceapi.nets.faceLandmark68Net.loadFromUri('/models') // 人脸特征网络
+      await faceapi.nets.faceExpressionNet.loadFromUri('/models') // 人脸表情网络
+      // await faceapi.nets.faceRecognitionNet.loadFromUri('/models') // 人脸识别网络
+
+      getMedia()
+    }
+
+    async function getMedia(constraints = {
+      audio: false,
+      video: {
+        facingMode: "user" // environment: 后置摄像头
+      }
+    }) {
+      let stream = null;
+
+      // alert(input.srcObject)
+
+      try {
+
+        // alert(navigator.mediaDevices)
+        // alert(navigator.mediaDevices.getUserMedia)
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+        /* use the stream */
+        // 旧的浏览器可能没有srcObject
+        if ('srcObject' in input) {
+          input.srcObject = stream;
+        }
+        // 防止在新的浏览器里使用它，应为它已经不再支持了
+        // https://developer.mozilla.org/en-US/docs/Web/API/URL/createObjectURL#Browser_compatibility
+        else {
+          input.src = window.URL.createObjectURL(stream);
+        }
+
+        input.onloadedmetadata = function (e) {
+          input.play();
+        };
+
+      } catch (err) {
+        /* handle the error */
+        alert(err);
+      }
+    }
+
+    function interpolateAgePredictions(age) {
+      predictedAges = [age].concat(predictedAges).slice(0, 30)
+      const avgPredictedAge = predictedAges.reduce((total, a) => total + a) / predictedAges.length
+      return avgPredictedAge
+    }
+
+    async function onPlay(input) {
+      // run face detection & recognition
+
+      // 人脸探测结果画布
+      const displaySize = {
+        width: input.clientWidth,
+        height: input.clientHeight
+      }
+      // 根据视频源重置结果画布尺寸
+      faceapi.matchDimensions(screenshot, displaySize)
+      faceapi.matchDimensions(canvas, displaySize)
+
+      // 获取人脸探测结果
+      const results = await faceapi
+        .detectAllFaces(input)
+        .withFaceLandmarks()
+        .withFaceExpressions()
+        .withAgeAndGender();
+
+      // 根据显示区域大小重置识别结果位置
+      const resizedResults = faceapi.resizeResults(results, displaySize)
+      console.log('resizedResults', resizedResults);
+
+      // 绘制活体探测
+      faceapi.draw.drawDetections(canvas, resizedResults)
+
+      // 绘制人脸表情
+      const minProbability = 0.05
+      faceapi.draw.drawFaceExpressions(canvas, resizedResults, minProbability)
+
+      // 绘制年龄&性别
+      resizedResults.forEach((result) => {
+        const {
+          age,
+          gender,
+          genderProbability
+        } = result
+        // interpolate gender predictions over last 30 frames
+        // to make the displayed age more stable
+        const interpolatedAge = interpolateAgePredictions(age)
+        new faceapi.draw.DrawTextField(
+          [
+            `${faceapi.utils.round(interpolatedAge, 0)} years`,
+            `${gender} (${faceapi.utils.round(genderProbability)})`
+          ],
+          result.detection.box.topLeft
+        ).draw(canvas)
+      })
+
+      // 探测到人脸立即探测, 并将拍摄到的照片存储为base64格式
+      if (resizedResults.length) {
+        console.log('探测到人脸!')
+        input.pause()
+        clearTimeout(trackingTimer)
+        // 绘制截图
+        screenshot.getContext('2d').drawImage(input, 0, 0, screenshot.width, screenshot.height)
+        screenshotImage.src = screenshot.toDataURL()
+        return
+      }
+
+      // 定时进行探测
+      trackingTimer = setTimeout(() => onPlay(input), 100)
+    }
+  </script>
+</body>
+
+</html>
